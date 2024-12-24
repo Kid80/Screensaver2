@@ -1,0 +1,228 @@
+R""(
+#version 430 core
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(rgba32f, binding = 0) uniform image2D imgOutput;
+
+layout(location = 0) uniform float t;                 /** Time */
+layout(location = 1)
+uniform vec3 pos;
+
+// ----------------------------------------------------------------------------
+//
+// functions
+//
+// ----------------------------------------------------------------------------
+
+const int MaxIterationDepth = 50;
+const float MinIterationDistance = 0.01;
+
+const int FractalIterations = 10;
+
+const float SphereRadius = 1.0;
+const vec3 SpherePosition = vec3(0.0, 0.0, 5.0);
+
+const vec3 ObjectColor = vec3(1.0, 0.0, 0.0);
+
+//const vec3 lightPosition = vec3(10.0, 10.0, 0.0);
+vec3 lightPosition = pos;
+
+int FractalIterationCount;
+
+
+float sphere_sdf(vec3 z)
+{
+    return length(z - SpherePosition) - SphereRadius;
+}
+
+const float TriangleScale = 2.0;
+const vec3 TriangleOffset = vec3(0.0, 0.0, 1.0);
+
+float triangle_sdf(vec3 z)
+{
+    float r;
+    int n = 0;
+    while (n < FractalIterations)
+    {
+        if (z.x + z.y < 0)
+            z.xy = -z.yx; // fold 1
+        if (z.x + z.z < 0)
+            z.xz = -z.zx; // fold 2
+        if (z.y + z.z < 0)
+            z.zy = -z.yz; // fold 3	
+        z = z * TriangleScale - TriangleOffset * (TriangleScale - 1.0);
+        n++;
+    }
+    return (length(z)) * pow(TriangleScale, -float(n));
+}
+
+const int MandelbulbIterations = 6;
+//const int MandelbulbPower = 8;
+float MandelbulbPower = t;
+const float MandelbulbBailout = 2;
+
+
+vec3 MandelbulbLastPosition;
+int MandelbulbIteration;
+float mandelbulb_sdf(vec3 pos)
+{
+    vec3 z = pos;
+    float dr = 1.0;
+    float r = 0.0;
+    for (int i = 0; i < MandelbulbIterations; i++)
+    {
+        FractalIterationCount = i;
+        r = length(z);
+        if (r > MandelbulbBailout)
+            break;
+		
+		// convert to polar coordinates
+        float theta = acos(z.z / r);
+        float phi = atan(z.y, z.x);
+        dr = pow(r, MandelbulbPower - 1.0) * MandelbulbPower * dr + 1.0;
+		
+		// scale and rotate the point
+        float zr = pow(r, MandelbulbPower);
+        theta = theta * MandelbulbPower;
+        phi = phi * MandelbulbPower;
+		
+		// convert back to cartesian coordinates
+        z = zr * vec3(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta));
+        z += pos;
+    }
+    MandelbulbLastPosition = z;
+    return 0.5 * log(r) * r / dr;
+}
+
+float potential(in vec3 pos)
+{
+    vec3 z = pos;
+    for (int i = 1; i < MandelbulbIterations; i++)
+    {
+        return log(length(z)) / pow(MandelbulbPower, float(i));
+    }
+	return 0.0;	
+}
+
+float mandelbulb_sdf_2(vec3 p)
+{
+    const float offset = 0.0001;
+    const vec3 xDir = vec3(offset, 0.0, 0.0);
+    const vec3 yDir = vec3(0.0, offset, 0.0);
+    const vec3 zDir = vec3(0.0, 0.0, offset);
+    const float EPS = 0.0000000000089;
+    
+    float pot = potential(p);
+    if (pot == 0.0)
+    {
+        return 0.0;
+    }
+    vec3 gradient = (vec3(potential(p + xDir * EPS), potential(p + yDir * EPS), potential(p + zDir * EPS)) - pot) / EPS;
+    return (0.5 / exp(pot)) * sinh(pot) / length(gradient);
+}
+
+int last = 0;
+float escapeLength(in vec3 pos)
+{
+    vec3 z = pos;
+    for (int i = 1; (i < MandelbulbIterations && last == 0) || i == last; i++)
+	{
+        last = i;
+        return length(z);
+    }
+	return length(z);
+}
+
+float mandelbulb_sdf_3(vec3 p)
+{
+    const float offset = 0.0001;
+    const vec3 xDir = vec3(offset, 0.0, 0.0);
+    const vec3 yDir = vec3(0.0, offset, 0.0);
+    const vec3 zDir = vec3(0.0, 0.0, offset);
+    float EPS = 1;
+    last = 0;
+    float r = escapeLength(p);
+    if (r * r < MandelbulbIterations)
+        return 0.0;
+    vec3 gradient = (vec3(escapeLength(p + xDir * EPS), escapeLength(p + yDir * EPS), escapeLength(p + zDir * EPS)) - r) / EPS;
+    return 0.5 * r * log(r) / length(gradient);
+}
+
+vec3 mandelbulb_colouring()
+{
+    float Smooth = float(MandelbulbIteration) + log(log(MandelbulbBailout)) / log(MandelbulbPower) - log(log(dot(MandelbulbLastPosition, MandelbulbLastPosition))) / log(MandelbulbPower);
+    return ObjectColor;
+}
+
+float sdf(vec3 z)
+{
+    return mandelbulb_sdf(z);
+
+}
+
+vec3 getSurfaceNormal(vec3 pos)
+{
+    const float offset = 0.0001;
+    const vec3 xDir = vec3(offset, 0.0, 0.0);
+    const vec3 yDir = vec3(0.0, offset, 0.0);
+    const vec3 zDir = vec3(0.0, 0.0, offset);
+    
+    float a = sdf(pos);
+    
+    return normalize(vec3(sdf(pos + xDir) - a,
+		                sdf(pos + yDir) - a,
+		                sdf(pos + zDir) - a));
+    //return normalize(vec3(sdf(pos + xDir) - sdf(pos - xDir),
+                            //sdf(pos + yDir) - sdf(pos - yDir),
+                            //sdf(pos + zDir) - sdf(pos - zDir)));
+
+}
+
+vec3 march(vec3 origin, vec3 direction) {
+    int n = 0;
+    
+    vec3 position = origin;
+    
+    float distance = 0;
+    bool diverged = false;
+    while (n < MaxIterationDepth)
+    {
+        distance = sdf(position);
+        position += direction * distance;
+        
+        if (sdf(position) <= MinIterationDistance)
+        {
+            diverged = true;
+            break;
+        }
+        
+            n++;
+    }
+    float illumination = (dot(normalize(lightPosition - position), getSurfaceNormal(position)));
+    return ObjectColor * illumination;
+    return diverged ? ObjectColor * illumination : vec3(0, 0, 0);
+
+}
+
+void main()
+{
+    vec4 value = vec4(0.0, 0.0, 0.0, 1.0);
+    ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
+    float speed = 100;
+    // the width of the texture
+    float width = 1000;
+
+    vec2 a = vec2(gl_GlobalInvocationID.xy) - vec2(gl_WorkGroupSize.xy * gl_NumWorkGroups.xy) * 0.5;
+    vec2 b = a / vec2(gl_WorkGroupSize.yy * gl_NumWorkGroups.yy) * 2.0;
+    
+    vec3 origin = pos;
+    vec3 direction = normalize(vec3(b, 1.0));
+
+
+
+    //value.xyz = direction;
+    value.xyz = march(origin, direction);
+    imageStore(imgOutput, texelCoord, value);
+}
+)""
