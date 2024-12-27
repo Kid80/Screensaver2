@@ -247,8 +247,6 @@ void start_screensaver()
 	glDeleteProgram(computeShader.ID);
 
 	glfwTerminate();
-	char a;
-	//std::cin >> a;
 	// TODO: return EXIT_SUCCESS;
 	return;
 }
